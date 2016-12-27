@@ -1,0 +1,129 @@
+---
+title: "Investiment Planner"
+output: html_document
+---
+
+```{r setup, echo=FALSE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("finance_lib.R")
+```
+
+## Read from TD Ameritrade transaction csv file
+
+TD Ameritrade的網站可以讓使用者下載所有交易的transaction資料，為csv的資料格式．因為我的海外交易主要就是透過TD Ameritrade，所以這分析程式的開發就綁定該格式．
+
+以下透過函式讀進資料，存放在trans中．
+
+```{r}
+trans <- read_td_trans("transactions.csv")
+str(trans)
+```
+
+## Divide transaction into categories
+
+股票交易紀錄可分為現金匯入、買、賣、現金股息再買入．透過filter_td_trans()這函式可將其分離出來．
+
+* 現金匯入 (trans.wire_in)
+    + 從國內或是美國匯進的現金
+* 現金利息 (trans.interst)
+    + 由帳戶內的現金產生的利息
+* 買股票 (trans.buy)
+    + 由帳戶內的現金買股票的交易，包含交易手續費紀錄也含在內
+* 賣股票 (trans.sel)
+    + 將帳戶內股票賣掉的交易，包含交易手續費紀錄也含在內
+* 現金股息再買入 (trans.didv)
+    + 如果有加入股息再投入計畫的話，會有這部分的交易紀錄
+    + 股息產生的現金，再買入該股票的紀錄
+
+```{r}
+trans.wire_in <- filter_td_trans(trans, type="wire_in")
+trans.interst <- filter_td_trans(trans, type="interst")
+trans.buy <- filter_td_trans(trans, type="buy")
+trans.didv <- filter_td_trans(trans, type="didv")
+trans.sel <- filter_td_trans(trans, type="sel")
+
+trans.wire_in
+trans.interst
+trans.buy
+trans.didv
+trans.sel
+```
+
+## Get stock data
+
+從TD Ameritrade交易紀錄中取得所有曾經買賣過的股票名單(symbols)．
+
+```{r}
+symbols <- unique(trans$SYMBOL)
+symbols <- symbols[symbols != ""]
+symbols
+```
+
+接著，取得這些股票的所有歷史公開資料(stock_data)．
+其中，stock_data.now是各股票最後一次的公開交易資料(stock_data.now)．要計算目前持有股票價值的話要使用此資料．
+
+```{r}
+stock_data <- get_pub_stock_data(symbols)
+write.csv(stock_data, file="stock_data.csv", row.names = FALSE)
+stock_data.now <- ddply(stock_data, .(SYMBOL), function(x) x[nrow(x), ])
+stock_data.now
+```
+
+## Get current stock position
+
+```{r}
+stock_position <- get_td_stock_position(trans.buy, trans.didv, trans.sel, stock_data.now)
+stock_position
+```
+
+## Calculate profits
+
+要計算各樣統計資訊，需要了解資金主要由這幾部分所構成．
+
+* 現金
+    - 匯入資金 (wire_in)
+* 買賣股票
+    - 買股票成本 (stock_cost)
+    - 買入交易手續費 (buy_cmisn)
+    - 賣出股票所得 (stock_sel)
+    - 賣出交易手續費 (sel_cmisn)
+* 目前持有股票
+    - 目前持有股票價值 (stock_cur_value)
+        - 股息再投入股票 (didv_gain)
+
+```{r}
+wire_in <- sum(trans.wire_in$AMOUNT)
+stock_cost <- sum(trans.buy$QUANTITY * trans.buy$PRICE)
+buy_cmisn <- sum(trans.buy$COMMISSION)
+didv_gain <- sum(trans.didv$QUANTITY * trans.didv$PRICE)
+stock_sel <- sum(trans.sel$QUANTITY * trans.sel$PRICE)
+sel_cmisn <- sum(trans.sel$COMMISSION)
+stock_cur_value <- sum(stock_position$value)
+```
+
+目前帳戶的資金計算如下：
+
+匯入資金 - 股票成本 - 買入交易手續費 + 賣出股票所得 - 賣出交易手續費
+
+```{r}
+wire_in - stock_cost - buy_cmisn + stock_sel - sel_cmisn
+```
+
+目前股票的價值計算如下：
+
+```{r}
+stock_cur_value
+```
+
+目前帳戶的價值計算如下：
+
+```{r}
+wire_in - stock_cost - buy_cmisn - sel_cmisn + stock_sel + stock_cur_value
+```
+
+本帳戶獲利及獲利率計算如下：
+
+```{r}
+(wire_in - stock_cost - buy_cmisn + stock_sel - sel_cmisn + stock_cur_value) - wire_in
+((wire_in - stock_cost - buy_cmisn - sel_cmisn + stock_sel + stock_cur_value) - wire_in) / wire_in
+```
